@@ -51,7 +51,7 @@ namespace ncvis {
         @param D Dimensionality of samples.
         @param Y Pointer to the embedding [N, d]. The j-th coordinate of i-th sample is assumed to be found at (X+d*i+j).
         */
-        void fit_transform(const float *const X, long N, long D, float* Y);
+        std::pair<std::vector<float>, std::vector<std::vector<float>>> fit_transform(const float *const X, long N, long D, float* Y);
     
     private:
         long d_;
@@ -77,7 +77,7 @@ namespace ncvis {
         KNNTable findKNN(const float *const X, long N, long D, long k);
         std::vector<Edge> build_edges(KNNTable& table);
         void init_embedding(long N, float* Y, float alpha, std::vector<ncvis::Edge>& edges);
-        void optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges);
+        std::pair<std::vector<float>, std::vector<std::vector<float>>> optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges);
     };
 }
 

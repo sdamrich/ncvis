@@ -43,8 +43,28 @@ cdef class NCVisWrapper:
     def __dealloc__(self):
         del self.c_ncvis
 
+    # no longer void
+    # returns data from the iterations now
+
+
+
     def fit_transform(self, float[:, :] X, float[:, :] Y):
-        self.c_ncvis.fit_transform(&X[0, 0], X.shape[0], X.shape[1], &Y[0, 0])
+        data = self.c_ncvis.fit_transform(&X[0, 0], X.shape[0], X.shape[1], &Y[0, 0])
+        nq = data.first.size()
+        q = []
+        for i in range(nq):
+            q.append(data.first[i])
+
+        e = []
+        ne = data.second.size()
+        for i in range(ne):
+            l = data.second[i].size()
+            embds_epoch = []
+            for j in range(l):
+                embds_epoch.append(data.second[i][j])
+            e.append(embds_epoch)
+        return q, e
+
 
 class NCVis:
     def __init__(self, d=2, n_threads=-1, n_neighbors=15, M=16, ef_construction=200, random_seed=42, n_epochs=50, n_init_epochs=20, spread=1., min_dist=0.4, a=None, b=None, alpha=1., alpha_Q=1., n_noise=None, distance="euclidean"):
@@ -101,6 +121,7 @@ class NCVis:
             Distance to use for nearest neighbors search.
         """
         self.d = d
+        self.n_epochs = n_epochs
         if n_noise is None:
             n_negative = 5
 
@@ -143,7 +164,7 @@ class NCVis:
 
         self.model = NCVisWrapper(d, n_threads, n_neighbors, M, ef_construction, random_seed, n_epochs, n_init_epochs, a, b, alpha, alpha_Q, negative_plan, distances[distance])
 
-    def fit_transform(self, X):
+    def fit_transform(self, X, export_data = False):
         """
         Builds an embedding for given points.
 
@@ -152,13 +173,23 @@ class NCVis:
         X : ndarray of size [n_samples, n_high_dimensions]
             The data samples. Will be converted to float by default.
 
+
         Returns:
         --------
         Y : ndarray of floats of size [n_samples, m_low_dimensions]
             The embedding of the data samples.
         """
-        Y = np.empty((X.shape[0], self.d), dtype=np.float32)
-        self.model.fit_transform(np.ascontiguousarray(X, dtype=np.float32),
-                                 np.ascontiguousarray(Y, dtype=np.float32))
 
-        return Y
+        # Additional variable export data
+
+        if not export_data:
+            Y = np.empty((X.shape[0], self.d), dtype=np.float32)
+            data = self.model.fit_transform(np.ascontiguousarray(X, dtype=np.float32),
+                                     np.ascontiguousarray(Y, dtype=np.float32))
+
+            return Y
+        else:
+            Y = np.empty((X.shape[0], self.d), dtype=np.float32)
+            data = self.model.fit_transform(np.ascontiguousarray(X, dtype=np.float32),
+                                     np.ascontiguousarray(Y, dtype=np.float32))
+            return Y, *data

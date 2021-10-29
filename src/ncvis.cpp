@@ -5,7 +5,7 @@
 #include "../lib/pcg-cpp/include/pcg_random.hpp"
 #include <chrono>
 
-ncvis::NCVis::NCVis(long d, long n_threads, long n_neighbors, long M, 
+ncvis::NCVis::NCVis(long d, long n_threads, long n_neighbors, long M,
                     long ef_construction, long random_seed, int n_epochs, 
                     int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, ncvis::Distance dist):
 d_(d), M_(M), ef_construction_(ef_construction), 
@@ -267,24 +267,28 @@ void ncvis::NCVis::init_embedding(long N, float* Y, float alpha, std::vector<ncv
     delete[] sigma;
 }
 
-void ncvis::NCVis::optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges){
+std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges){
     float Q_cum=0.; 
-    #pragma omp parallel
-    {
+    //#pragma omp parallel
+    //{
     int id = omp_get_thread_num();
     int n_threads = omp_get_num_threads();
     pcg64 pcg(random_seed_+id);
     // Build layout
     std::uniform_int_distribution<long> gen_ind(0, N-1);
 
+    std::vector<float> Q_data;
+    std::vector<std::vector<float>> E_data;
+
+    // copy initial values of Y to vector to return them
+    std::vector<float> Y_epoch{Y, Y+N*d_};
+    E_data.push_back(Y_epoch);
     for (int epoch = 0; epoch < n_epochs_; ++epoch){
-        // Hogwild: lock-free parameters reading and writing
         float step = alpha_*(1-(((float)epoch)/n_epochs_)*(((float)epoch)/n_epochs_));
         float Q_copy = Q;
         long cur_noise = n_noise_[epoch];
         #pragma omp for nowait
         for (long i = 0; i < (long)edges.size(); ++i){
-            // printf("[%d] (%ld, %ld)\n", epoch, edges[i].first, edges[i].second);
             long id = edges[i].first;
             for (long j = 0; j < cur_noise+1; ++j){
                 long other_id;
@@ -307,20 +311,9 @@ void ncvis::NCVis::optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>
                     } else {
                         w = -1/(1+1/w);
                     }
-                    // Non-blocking write
-                    // #pragma omp critical
-                    // {
-                    // printf("[%d:%d] Ph = %f\n", epoch, omp_get_thread_num(), Ph);
-                    // }
                     Q_copy -= w*alpha_Q_;
-                    // Q -= w*alpha_Q;
                     w = 2*w*Ph*a_*b_*powf(d2, b_-1);
                 }
-                // #pragma omp critical
-                // {
-                // printf("[%d:%d] Q = %f\n", epoch, omp_get_thread_num(), Q);
-                // }
-                // Also non-blocking write
                 for (long k = 0; k < d_; ++k){
                     float dx_k = Y[other_id*d_+k] - Y[id*d_+k];
                     dx_k = dx_k * w * step;
@@ -341,12 +334,20 @@ void ncvis::NCVis::optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>
         {
         Q = Q_cum/n_threads;
         Q_cum = 0;
+
+        Q_data.push_back(Q);
+
+        // copy current values of Y to vector to return them
+        std::vector<float> Y_epoch{Y, Y+N*d_};
+        E_data.push_back(Y_epoch);
         }
     }
-    }
+    //}
+
+    return std::make_pair(Q_data, E_data);
 }
 
-void ncvis::NCVis::fit_transform(const float *const X, long N, long D, float* Y){
+std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::fit_transform(const float *const X, long N, long D, float* Y){
     // printf("==============DATA============\n");
     // for (long i=0; i<N; ++i){
     //     printf("[");
@@ -425,7 +426,7 @@ void ncvis::NCVis::fit_transform(const float *const X, long N, long D, float* Y)
                 << " ms\n";
         t1 = std::chrono::high_resolution_clock::now();
     #endif
-    optimize(N, Y, Q, edges);
+    std::pair<std::vector<float>, std::vector<std::vector<float>>> data = optimize(N, Y, Q, edges);
     #if defined(DEBUG)
         t2 = std::chrono::high_resolution_clock::now();
         std::cout << "optimize: "
@@ -451,4 +452,6 @@ void ncvis::NCVis::fit_transform(const float *const X, long N, long D, float* Y)
     //     printf("]\n");
     // }
     // printf("===============================\n");
+    //return data;
+    return data;
 }
