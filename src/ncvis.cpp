@@ -7,9 +7,9 @@
 
 ncvis::NCVis::NCVis(long d, long n_threads, long n_neighbors, long M,
                     long ef_construction, long random_seed, int n_epochs, 
-                    int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, ncvis::Distance dist):
+                    int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, ncvis::Distance dist, bool fix_Q):
 d_(d), M_(M), ef_construction_(ef_construction), 
-random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs), n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q), space_(nullptr), appr_alg_(nullptr), dist_(dist)
+random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs), n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q), space_(nullptr), appr_alg_(nullptr), dist_(dist), fix_Q_(fix_Q)
 {
     omp_set_num_threads(n_threads);
     n_noise_ = new long[n_epochs];
@@ -283,8 +283,11 @@ std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::opt
     // copy initial values of Y to vector to return them
     std::vector<float> Y_epoch{Y, Y+N*d_};
     E_data.push_back(Y_epoch);
+    Q_data.push_back(Q);
+
     for (int epoch = 0; epoch < n_epochs_; ++epoch){
         float step = alpha_*(1-(((float)epoch)/n_epochs_)*(((float)epoch)/n_epochs_));
+        float step_Q = alpha_Q_*(1-(((float)epoch)/n_epochs_)*(((float)epoch)/n_epochs_));
         float Q_copy = Q;
         long cur_noise = n_noise_[epoch];
         #pragma omp for nowait
@@ -311,7 +314,13 @@ std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::opt
                     } else {
                         w = -1/(1+1/w);
                     }
-                    Q_copy -= w*alpha_Q_;
+                    if (fix_Q_){
+                        // new version matching the gradient of Q to that of Y.
+                        Q_copy -= w*step_Q*expf(2.*Q_copy);
+                    } else {
+                        // old version
+                        Q_copy -= w*alpha_Q_;
+                    }
                     w = 2*w*Ph*a_*b_*powf(d2, b_-1);
                 }
                 for (long k = 0; k < d_; ++k){

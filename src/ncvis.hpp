@@ -39,7 +39,7 @@ namespace ncvis {
         @param n_noise Number of noise samples per data sample for each iteration. An array of size [n_epochs]; will be initialized to 3 noise samples per data sample for each epoch if not provided.
         @param dist Distance to use for nearest neighbors search.
         */
-        NCVis(long d=2, long n_threads=1, long n_neighbors=30, long M = 16, long ef_construction = 200, long random_seed = 42, int n_epochs=50, int n_init_epochs=20, float a=1., float b=1., float alpha=1., float alpha_Q=1., long* n_noise=nullptr, ncvis::Distance dist=ncvis::Distance::squared_L2);
+        NCVis(long d=2, long n_threads=1, long n_neighbors=30, long M = 16, long ef_construction = 200, long random_seed = 42, int n_epochs=50, int n_init_epochs=20, float a=1., float b=1., float alpha=1., float alpha_Q=1., long* n_noise=nullptr, ncvis::Distance dist=ncvis::Distance::squared_L2, bool fix_Q=false);
         ~NCVis();
         /*!
         @brief Build embedding for points.
@@ -70,6 +70,8 @@ namespace ncvis {
         hnswlib::SpaceInterface<float>* space_;
         hnswlib::HierarchicalNSW<float>* appr_alg_;
         Distance dist_;
+        bool fix_Q_;
+
 
         void preprocess(const float *const x, long D, ncvis::Distance dist, float* out);
         float d_sqr(const float *const x, const float *const y);
