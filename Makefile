@@ -1,8 +1,8 @@
 Sources=main.cpp ncvis.cpp knntable.cpp
 Executable=ncvis
 
-CFlags=-c -Wall -std=c++11 -fopenmp -fpic -O3 -ffast-math
-DebugCFlags=-c -Wall -std=c++11 -fopenmp -fpic -O3 -g3 -DDEBUG -ffast-math
+CFlags=-c -Wall -std=c++14 -fopenmp -fpic -O3 -ffast-math
+DebugCFlags=-c -Wall -std=c++14 -fopenmp -fpic -O3 -g3 -DDEBUG -ffast-math
 LDFlags=-lm -lgomp
 DebugLDFlags=-lm -lgomp
 ObjectDir=obj/

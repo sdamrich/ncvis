@@ -4,6 +4,9 @@ cimport numpy as cnp
 import ctypes
 from multiprocessing import cpu_count
 from libcpp cimport bool
+from vis_utils.utils import NCE_loss_keops, KL_divergence, compute_normalization
+import scipy.sparse
+
 
 from scipy.optimize import curve_fit
 def find_ab_params(spread=1., min_dist=0.1):
@@ -29,7 +32,7 @@ cdef class NCVisWrapper:
     cdef cncvis.NCVis* c_ncvis
     cdef long d
 
-    def __cinit__(self, long d, long n_threads, long n_neighbors, long M, long ef_construction, long random_seed, int n_epochs, int n_init_epochs, float a, float b, float alpha, float alpha_Q, object n_noise, cncvis.Distance distance, bool fix_Q):
+    def __cinit__(self, long d, long n_threads, long n_neighbors, long M, long ef_construction, long random_seed, int n_epochs, int n_init_epochs, float a, float b, float alpha, float alpha_Q, object n_noise, cncvis.Distance distance, bool fix_Q, bool fix_noise):
         cdef long[:] n_noise_arr
         if isinstance(n_noise, int):
             n_noise_arr = np.full(n_epochs, n_noise, dtype=np.long)
@@ -38,7 +41,7 @@ cdef class NCVisWrapper:
                 raise ValueError("Expected 1D n_noise array.")
             n_epochs = n_noise.shape[0]
             n_noise_arr = n_noise.astype(np.long)
-        self.c_ncvis = new cncvis.NCVis(d, n_threads, n_neighbors, M, ef_construction, random_seed, n_epochs, n_init_epochs, a, b, alpha, alpha_Q, &n_noise_arr[0], distance, fix_Q)
+        self.c_ncvis = new cncvis.NCVis(d, n_threads, n_neighbors, M, ef_construction, random_seed, n_epochs, n_init_epochs, a, b, alpha, alpha_Q, &n_noise_arr[0], distance, fix_Q, fix_noise)
         self.d = d
 
     def __dealloc__(self):
@@ -50,25 +53,45 @@ cdef class NCVisWrapper:
 
 
     def fit_transform(self, float[:, :] X, float[:, :] Y):
-        data = self.c_ncvis.fit_transform(&X[0, 0], X.shape[0], X.shape[1], &Y[0, 0])
-        nq = data.first.size()
-        q = []
-        for i in range(nq):
-            q.append(data.first[i])
+        aux_data_cpp = self.c_ncvis.fit_transform(&X[0, 0],
+                                                  X.shape[0],
+                                                  X.shape[1],
+                                                  &Y[0, 0])
 
-        e = []
-        ne = data.second.size()
-        for i in range(ne):
-            l = data.second[i].size()
-            embds_epoch = []
-            for j in range(l):
-                embds_epoch.append(data.second[i][j])
-            e.append(embds_epoch)
-        return q, e
+        qs_vector = aux_data_cpp[b"qs"]
+
+        n_q = qs_vector.size()
+        qs = []
+        for i in range(n_q):
+            qs.append(qs_vector[i])
+
+        qs = np.array(qs)
+
+        embds_vector = aux_data_cpp[b"embds"]
+        embds = []
+        n_embds = embds_vector.size()
+        for i in range(n_embds):
+           embds.append(embds_vector[i])
+
+        embds = np.array(embds)
+
+
+
+        edges_vector = aux_data_cpp[b"edges"]
+        edges = []
+        n_edges = edges_vector.size()
+        for i in range(n_edges):
+            edges.append(int(edges_vector[i]))
+
+        edges = np.array(edges)
+
+        aux_data = {"qs": qs, "embds": embds, "edges": edges}
+
+        return aux_data
 
 
 class NCVis:
-    def __init__(self, d=2, n_threads=-1, n_neighbors=15, M=16, ef_construction=200, random_seed=42, n_epochs=50, n_init_epochs=20, spread=1., min_dist=0.4, a=None, b=None, alpha=1., alpha_Q=1., n_noise=None, distance="euclidean", fix_Q=False):
+    def __init__(self, d=2, n_threads=-1, n_neighbors=15, M=16, ef_construction=200, random_seed=42, n_epochs=50, n_init_epochs=20, spread=1., min_dist=0.4, a=None, b=None, alpha=1., alpha_Q=1., n_noise=None, distance="euclidean", fix_Q=False, fix_noise=False):
         """
         Creates new NCVis instance.
 
@@ -123,6 +146,13 @@ class NCVis:
         """
         self.d = d
         self.n_epochs = n_epochs
+        self.random_seed = random_seed
+        self.distance = distance
+        self.fix_noise = fix_noise
+        self.fix_Q = fix_Q
+        self.n_noise = n_noise
+        self.n_neighbors = n_neighbors
+
         if n_noise is None:
             n_negative = 5
 
@@ -162,10 +192,18 @@ class NCVis:
                 a, b = find_ab_params(spread, min_dist)
             else:
                 raise ValueError(f'Expected (a, b) to be (float, float) or (None, None),con but got (a, b) = ({a}, {b})')
+        self.a = a
+        self.b = b
+        self.model = NCVisWrapper(d, n_threads, n_neighbors, M, ef_construction, random_seed, n_epochs, n_init_epochs, a, b, alpha, alpha_Q, negative_plan, distances[distance], fix_Q, fix_noise)
 
-        self.model = NCVisWrapper(d, n_threads, n_neighbors, M, ef_construction, random_seed, n_epochs, n_init_epochs, a, b, alpha, alpha_Q, negative_plan, distances[distance], fix_Q)
-
-    def fit_transform(self, X, export_data = False):
+    def fit_transform(self,
+                      X,
+                      log_norm=True,
+                      log_nce=True,
+                      log_nce_no_noise=True,
+                      log_nce_norm=True,
+                      log_kl=True,
+                      log_embds=True):
         """
         Builds an embedding for given points.
 
@@ -181,20 +219,92 @@ class NCVis:
             The embedding of the data samples.
         """
 
-        # Additional variable export data
+        Y = np.empty((X.shape[0], self.d), dtype=np.float32)
+        aux_data = self.model.fit_transform(np.ascontiguousarray(X,
+                                                                  dtype=np.float32),
+                                             np.ascontiguousarray(Y,
+                                                                  dtype=np.float32))
+        self.embd = Y
+        self.aux_data = aux_data
 
-        if not export_data:
-            Y = np.empty((X.shape[0], self.d), dtype=np.float32)
-            data = self.model.fit_transform(np.ascontiguousarray(X, dtype=np.float32),
-                                     np.ascontiguousarray(Y, dtype=np.float32))
-            self.embd = Y
+        # reshape logged embeddings and edges
+        self.aux_data["embds"] = self.aux_data["embds"].reshape(self.n_epochs+1,
+                                                                len(X),
+                                                                self.d)
 
-            return Y
-        else:
-            Y = np.empty((X.shape[0], self.d), dtype=np.float32)
-            data = self.model.fit_transform(np.ascontiguousarray(X, dtype=np.float32),
-                                     np.ascontiguousarray(Y, dtype=np.float32))
-            self.embd = Y
-            self.qs = data[0]
-            self.embds = data[1]
-            return Y, *data
+        self.aux_data["edges"] = self.aux_data["edges"].reshape(-1, 2)
+
+        # log various parameters in self.aux_data
+        self.aux_data["n_epochs"] = self.n_epochs
+        self.aux_data["random_seed"] = self.random_seed
+        self.aux_data["distance"] = self.distance
+        self.aux_data["fix_noise"] = self.fix_noise
+        self.aux_data["fix_Q"] = self.fix_Q
+        self.aux_data["n_noise"] = self.n_noise
+        self.aux_data["n_neighbors"] = self.n_neighbors
+
+        if log_norm or log_nce_norm:
+            norm = []
+            for embd in self.aux_data["embds"]:
+                norm.append(compute_normalization(embd, a=self.a, b=self.b).cpu().numpy())
+            norm = np.array(norm)
+            self.aux_data["normalization"] = norm.flatten()
+
+        if log_nce:
+            knn_graph = scipy.sparse.coo_matrix((np.ones(len(self.aux_data["edges"])),
+                                                (self.aux_data["edges"][:, 0],
+                                                 self.aux_data["edges"][:, 1])),
+                                               shape=(len(X), len(X)))
+
+            zs = np.exp(self.aux_data["qs"])
+
+        if log_nce:
+            assert isinstance(self.n_noise, int)
+            nce_loss = []
+            for embd, z in zip(self.aux_data["embds"], zs):
+                nce_loss.append(NCE_loss_keops(knn_graph,
+                                               embd,
+                                               m=self.n_noise,
+                                               Z=z,
+                                               a=self.a,
+                                               b=self.b))
+            self.aux_data["nce_loss"] = np.array(nce_loss)
+
+        if log_nce_no_noise:
+            nce_loss_no_noise = []
+            for embd, z in zip(self.aux_data["embds"], zs):
+                nce_loss_no_noise.append(NCE_loss_keops(knn_graph,
+                                                        embd,
+                                                        m=5,
+                                                        Z=z,
+                                                        a=self.a,
+                                                        b=self.b,
+                                                        noise_log_arg=False))
+            self.aux_data["nce_loss_no_noise"] = np.array(nce_loss_no_noise)
+
+        if log_nce_norm:
+            nce_loss_norm = []
+            for embd, z in zip(self.aux_data["embds"], norm):
+                nce_loss_norm.append(NCE_loss_keops(knn_graph,
+                                               embd,
+                                               m=self.n_noise,
+                                               Z=z,
+                                               a=self.a,
+                                               b=self.b))
+            self.aux_data["nce_loss_norm"] = np.array(nce_loss_norm)
+
+        if log_kl:
+            kl_div = []
+            for embd in self.aux_data["embds"]:
+                kl_div.append(KL_divergence(high_sim=knn_graph,
+                                            embedding=embd,
+                                            a=self.a,
+                                            b=self.b,
+                                            norm_over_pos=False))
+            self.aux_data["kl_div"] = np.array(kl_div)
+
+        if not log_embds:
+            del self.aux_data["embds"]
+
+        return Y
+

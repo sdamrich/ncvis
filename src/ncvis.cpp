@@ -4,12 +4,16 @@
 #include "ncvis.hpp"
 #include "../lib/pcg-cpp/include/pcg_random.hpp"
 #include <chrono>
+#include <iostream>
+#include <fstream>
+#include <map>
+#include <string>
 
 ncvis::NCVis::NCVis(long d, long n_threads, long n_neighbors, long M,
                     long ef_construction, long random_seed, int n_epochs, 
-                    int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, ncvis::Distance dist, bool fix_Q):
+                    int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, ncvis::Distance dist, bool fix_Q, bool fix_noise):
 d_(d), M_(M), ef_construction_(ef_construction), 
-random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs), n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q), space_(nullptr), appr_alg_(nullptr), dist_(dist), fix_Q_(fix_Q)
+random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs), n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q), space_(nullptr), appr_alg_(nullptr), dist_(dist), fix_Q_(fix_Q), fix_noise_(fix_noise)
 {
     omp_set_num_threads(n_threads);
     n_noise_ = new long[n_epochs];
@@ -267,8 +271,10 @@ void ncvis::NCVis::init_embedding(long N, float* Y, float alpha, std::vector<ncv
     delete[] sigma;
 }
 
-std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges){
-    float Q_cum=0.; 
+//std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges){
+std::map<std::string, std::vector<float>> ncvis::NCVis::optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges){
+
+    float Q_cum=0.;
     //#pragma omp parallel
     //{
     int id = omp_get_thread_num();
@@ -278,16 +284,31 @@ std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::opt
     std::uniform_int_distribution<long> gen_ind(0, N-1);
 
     std::vector<float> Q_data;
-    std::vector<std::vector<float>> E_data;
+    std::vector<float> E_data;
 
     // copy initial values of Y to vector to return them
     std::vector<float> Y_epoch{Y, Y+N*d_};
-    E_data.push_back(Y_epoch);
+    E_data.insert(E_data.end(), Y_epoch.begin(), Y_epoch.end());
     Q_data.push_back(Q);
+
+    // create degree vector
+    std::vector<float> deg(N, 0.0);
+    if (fix_noise_){
+        for (long i = 0; i < (long)edges.size(); ++i){
+            deg[edges[i].first] += 1.0; // only count out-degree
+            // deg[edges[i].second] += 1.0; // every edge appears twice in edges (once in each direction), but we only want to consider it with weight 1.
+        }
+    }
 
     for (int epoch = 0; epoch < n_epochs_; ++epoch){
         float step = alpha_*(1-(((float)epoch)/n_epochs_)*(((float)epoch)/n_epochs_));
-        float step_Q = alpha_Q_*(1-(((float)epoch)/n_epochs_)*(((float)epoch)/n_epochs_));
+        float step_Q = alpha_Q_;
+        if (fix_Q_){
+            // damped just like for the step size of the embeddings
+             step_Q *= (1-(((float)epoch)/n_epochs_)*(((float)epoch)/n_epochs_));
+        }
+
+
         float Q_copy = Q;
         long cur_noise = n_noise_[epoch];
         #pragma omp for nowait
@@ -307,20 +328,22 @@ std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::opt
                 float Ph = 1/(1+a_*powf(d2, b_));
                 float w = 1.;
                 if (cur_noise != 0){
-                    w = Ph/(cur_noise*expf(Q_copy));
-                    // w = Ph/(cur_noise*expf(Q));
+                    if (fix_noise_){
+                        float prob_noise = deg[id]/(((float)N-1.0)*(float)edges.size());
+                        w = Ph/(cur_noise*prob_noise*expf(Q_copy));
+                    } else {
+                        w = Ph/(cur_noise*expf(Q_copy));
+                        // w = Ph/(cur_noise*expf(Q));
+                    }
+
                     if (j == 0){
                         w = 1/(1+w);    
                     } else {
                         w = -1/(1+1/w);
                     }
-                    if (fix_Q_){
-                        // new version matching the gradient of Q to that of Y.
-                        Q_copy -= w*step_Q*expf(2.*Q_copy);
-                    } else {
-                        // old version
-                        Q_copy -= w*alpha_Q_;
-                    }
+
+                    Q_copy -= w*step_Q;
+
                     w = 2*w*Ph*a_*b_*powf(d2, b_-1);
                 }
                 for (long k = 0; k < d_; ++k){
@@ -348,15 +371,16 @@ std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::opt
 
         // copy current values of Y to vector to return them
         std::vector<float> Y_epoch{Y, Y+N*d_};
-        E_data.push_back(Y_epoch);
+        E_data.insert(E_data.end(), Y_epoch.begin(), Y_epoch.end());
         }
     }
-    //}
 
-    return std::make_pair(Q_data, E_data);
+    std::map<std::string, std::vector<float>> aux_data { {"qs", Q_data},
+                                                         {"embds", E_data} };
+    return aux_data;
 }
 
-std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::fit_transform(const float *const X, long N, long D, float* Y){
+std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform(const float *const X, long N, long D, float* Y){
     // printf("==============DATA============\n");
     // for (long i=0; i<N; ++i){
     //     printf("[");
@@ -435,7 +459,7 @@ std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::fit
                 << " ms\n";
         t1 = std::chrono::high_resolution_clock::now();
     #endif
-    std::pair<std::vector<float>, std::vector<std::vector<float>>> data = optimize(N, Y, Q, edges);
+    std::map<std::string, std::vector<float>> aux_data = optimize(N, Y, Q, edges);
     #if defined(DEBUG)
         t2 = std::chrono::high_resolution_clock::now();
         std::cout << "optimize: "
@@ -462,5 +486,15 @@ std::pair<std::vector<float>, std::vector<std::vector<float>>> ncvis::NCVis::fit
     // }
     // printf("===============================\n");
     //return data;
-    return data;
+
+    // transfrom edges to float for logging
+    std::vector<float> edges_float;
+    for (long i = 0; i < (long)edges.size(); ++i){
+        edges_float.push_back((float)edges[i].first);
+        edges_float.push_back((float)edges[i].second);
+    }
+    aux_data["edges"] = edges_float;
+
+
+    return aux_data;
 }

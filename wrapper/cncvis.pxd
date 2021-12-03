@@ -7,10 +7,12 @@ cdef extern from "../src/ncvis.hpp" namespace "ncvis":
 
 from libcpp.vector cimport vector
 from libcpp.pair cimport pair
+from libcpp.map cimport map
+from libcpp.string cimport string
 
 
 cdef extern from "../src/ncvis.hpp" namespace "ncvis":
     cdef cppclass NCVis:
-        NCVis(long d, long n_threads, long n_neighbors, long M, long ef_construction, long random_seed, int n_epochs, int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, Distance dist, fix_Q) except +
-        pair[vector[float], vector[vector[float]]] fit_transform(const float *const X, long N, long D, float* Y)
+        NCVis(long d, long n_threads, long n_neighbors, long M, long ef_construction, long random_seed, int n_epochs, int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, Distance dist, bint fix_Q, bint fix_noise) except +
+        map[string, vector[float]] fit_transform(const float *const X, long N, long D, float* Y)
 

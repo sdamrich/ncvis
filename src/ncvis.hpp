@@ -5,6 +5,8 @@
 #include "../lib/hnswlib/hnswlib/hnswlib.h"
 #include "knntable.hpp"
 #include <cstddef>
+#include <map>
+#include <string>
 
 #ifndef NCVIS_H
 #define NCVIS_H
@@ -39,7 +41,7 @@ namespace ncvis {
         @param n_noise Number of noise samples per data sample for each iteration. An array of size [n_epochs]; will be initialized to 3 noise samples per data sample for each epoch if not provided.
         @param dist Distance to use for nearest neighbors search.
         */
-        NCVis(long d=2, long n_threads=1, long n_neighbors=30, long M = 16, long ef_construction = 200, long random_seed = 42, int n_epochs=50, int n_init_epochs=20, float a=1., float b=1., float alpha=1., float alpha_Q=1., long* n_noise=nullptr, ncvis::Distance dist=ncvis::Distance::squared_L2, bool fix_Q=false);
+        NCVis(long d=2, long n_threads=1, long n_neighbors=30, long M = 16, long ef_construction = 200, long random_seed = 42, int n_epochs=50, int n_init_epochs=20, float a=1., float b=1., float alpha=1., float alpha_Q=1., long* n_noise=nullptr, ncvis::Distance dist=ncvis::Distance::squared_L2, bool fix_Q=false, bool fix_noise=false);
         ~NCVis();
         /*!
         @brief Build embedding for points.
@@ -51,7 +53,7 @@ namespace ncvis {
         @param D Dimensionality of samples.
         @param Y Pointer to the embedding [N, d]. The j-th coordinate of i-th sample is assumed to be found at (X+d*i+j).
         */
-        std::pair<std::vector<float>, std::vector<std::vector<float>>> fit_transform(const float *const X, long N, long D, float* Y);
+        std::map<std::string, std::vector<float>> fit_transform(const float *const X, long N, long D, float* Y);
     
     private:
         long d_;
@@ -71,6 +73,7 @@ namespace ncvis {
         hnswlib::HierarchicalNSW<float>* appr_alg_;
         Distance dist_;
         bool fix_Q_;
+        bool fix_noise_;
 
 
         void preprocess(const float *const x, long D, ncvis::Distance dist, float* out);
@@ -79,7 +82,7 @@ namespace ncvis {
         KNNTable findKNN(const float *const X, long N, long D, long k);
         std::vector<Edge> build_edges(KNNTable& table);
         void init_embedding(long N, float* Y, float alpha, std::vector<ncvis::Edge>& edges);
-        std::pair<std::vector<float>, std::vector<std::vector<float>>> optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges);
+        std::map<std::string, std::vector<float>> optimize(long N, float* Y, float& Q, std::vector<ncvis::Edge>& edges);
     };
 }
 
