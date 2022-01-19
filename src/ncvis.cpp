@@ -13,7 +13,7 @@ ncvis::NCVis::NCVis(long d, long n_threads, long n_neighbors, long M,
                     long ef_construction, long random_seed, int n_epochs, 
                     int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, ncvis::Distance dist, bool fix_Q, bool fix_noise):
 d_(d), M_(M), ef_construction_(ef_construction), 
-random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs), n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q), space_(nullptr), appr_alg_(nullptr), dist_(dist), fix_Q_(fix_Q), fix_noise_(fix_noise)
+random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs), n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q), space_(nullptr), appr_alg_(nullptr), dist_(dist), fix_Q_(fix_Q), fix_noise_(fix_noise), precomp_init(false)
 {
     omp_set_num_threads(n_threads);
     n_noise_ = new long[n_epochs];
@@ -380,6 +380,7 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::optimize(long N, float* 
     return aux_data;
 }
 
+// version in which edges are computed
 std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform(const float *const X, long N, long D, float* Y){
     // printf("==============DATA============\n");
     // for (long i=0; i<N; ++i){
@@ -390,7 +391,7 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform(const floa
     //     printf("]\n");
     // }
     // printf("===============================\n");
-    if (N == 0 || D == 0){ 
+    if (N == 0 || D == 0){
         throw std::runtime_error("[ncvis::NCVis::fit_transform] Dataset should have at least one element.");
     }
     if (Y == nullptr){
@@ -413,7 +414,7 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform(const floa
         t1 = std::chrono::high_resolution_clock::now();
     #endif
     KNNTable table = findKNN(X, N, D, k);
-    
+
     // The graph itself is no longer needed
     delete appr_alg_;
     appr_alg_ = nullptr;
@@ -428,6 +429,7 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform(const floa
         t1 = std::chrono::high_resolution_clock::now();
     #endif
     table.symmetrize();
+
     #if defined(DEBUG)
         t2 = std::chrono::high_resolution_clock::now();
         std::cout << "symmetrize: "
@@ -436,6 +438,7 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform(const floa
         t1 = std::chrono::high_resolution_clock::now();
     #endif
     std::vector<ncvis::Edge> edges = build_edges(table);
+
     #if defined(DEBUG)
         t2 = std::chrono::high_resolution_clock::now();
         std::cout << "build_edges: "
@@ -448,10 +451,107 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform(const floa
 
     #if defined(DEBUG)
         t1 = std::chrono::high_resolution_clock::now();
-    #endif 
+    #endif
 
-    init_embedding(N, Y, init_alpha, edges);
-    
+    // if no precomputed initialization was given, compute one
+    if (!precomp_init){
+        init_embedding(N, Y, init_alpha, edges);
+    }
+
+    #if defined(DEBUG)
+        t2 = std::chrono::high_resolution_clock::now();
+        std::cout << "initialize: "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(t2-t1).count()
+                << " ms\n";
+        t1 = std::chrono::high_resolution_clock::now();
+    #endif
+    std::map<std::string, std::vector<float>> aux_data = optimize(N, Y, Q, edges);
+    #if defined(DEBUG)
+        t2 = std::chrono::high_resolution_clock::now();
+        std::cout << "optimize: "
+                << std::chrono::duration_cast<std::chrono::milliseconds>(t2-t1).count()
+                << " ms\n";
+    #endif
+    // printf("============DISTANCES==========\n");
+    // for (long i=0; i<N; ++i){
+    //     printf("[");
+    //     for (long j=0; j<table.dists[i].size(); ++j){
+    //         printf("%f ", table.dists[i][j]);
+    //     }
+    //     printf("]\n");
+    // }
+    // printf("===============================\n");
+
+    // printf("============NEIGHBORS==========\n");
+    // for (long i=0; i<N; ++i){
+    //     printf("[");
+    //     for (long j=0; j<table.inds[i].size(); ++j){
+    //         printf("%ld ", table.inds[i][j]);
+    //     }
+    //     printf("]\n");
+    // }
+    // printf("===============================\n");
+    //return data;
+
+    // transfrom edges to float for logging
+    std::vector<float> edges_float;
+    for (long i = 0; i < (long)edges.size(); ++i){
+        edges_float.push_back((float)edges[i].first);
+        edges_float.push_back((float)edges[i].second);
+    }
+    aux_data["edges"] = edges_float;
+
+    return aux_data;
+}
+
+
+// version in which edges are given
+std::map<std::string, std::vector<float>> ncvis::NCVis::fit_transform_edges(const float *const X, long N, long D, float* Y, long* precomp_edges, long n_edges){
+    // printf("==============DATA============\n");
+    // for (long i=0; i<N; ++i){
+    //     printf("[");
+    //     for (long j=0; j<D; ++j){
+    //         printf("%5.2f ", X[j+D*i]);
+    //     }
+    //     printf("]\n");
+    // }
+    // printf("===============================\n");
+    if (N == 0 || D == 0){
+        throw std::runtime_error("[ncvis::NCVis::fit_transform] Dataset should have at least one element.");
+    }
+    if (Y == nullptr){
+        throw std::runtime_error("[ncvis::NCVis::fit_transform] Null pointer provided for output.");
+    }
+    #if defined(DEBUG)
+        auto t1 = std::chrono::high_resolution_clock::now();
+    #endif
+    // Number of neighbors can't exceed the total number of other points
+    long k = (n_neighbors_ < N-1)? n_neighbors_:(N-1);
+    k = (k > 0)? k:1;
+
+
+    // bring precomputed edges into the right format
+    std::vector<ncvis::Edge> edges;
+    edges.reserve(n_edges);
+
+    for (long i = 0; i < (long)n_edges; ++i){
+        edges.emplace_back(precomp_edges[2*i], precomp_edges[2*i + 1]);
+    }
+
+
+    // Normalization
+    float Q=0.;
+    float init_alpha = 1./k;
+
+    #if defined(DEBUG)
+        t1 = std::chrono::high_resolution_clock::now();
+    #endif
+
+    // if no precomputed initialization was given, compute one
+    if (!precomp_init){
+        init_embedding(N, Y, init_alpha, edges);
+    }
+
     #if defined(DEBUG)
         t2 = std::chrono::high_resolution_clock::now();
         std::cout << "initialize: "

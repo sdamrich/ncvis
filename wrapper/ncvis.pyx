@@ -4,6 +4,8 @@ cimport numpy as cnp
 import ctypes
 from multiprocessing import cpu_count
 from libcpp cimport bool
+from libcpp.pair cimport pair
+from libcpp.vector cimport vector
 from vis_utils.utils import NCE_loss_keops, KL_divergence, compute_normalization
 import scipy.sparse
 
@@ -50,48 +52,45 @@ cdef class NCVisWrapper:
     # no longer void
     # returns data from the iterations now
 
+    @property
+    def precomp_init(self):
+        return self.c_ncvis.precomp_init
+    @precomp_init.setter
+    def precomp_init(self, precomp_init):
+        self.c_ncvis.precomp_init = precomp_init
 
+    def postprocess_aux_data_cpp(self, aux_data_cpp):
+
+        qs = np.array(aux_data_cpp[b"qs"])
+        embds = np.array(aux_data_cpp[b"embds"])
+        edges = np.array(aux_data_cpp[b"edges"]).astype(int)
+
+
+        aux_data = {"qs": qs, "embds": embds, "edges": edges}
+
+        return aux_data
 
     def fit_transform(self, float[:, :] X, float[:, :] Y):
         aux_data_cpp = self.c_ncvis.fit_transform(&X[0, 0],
                                                   X.shape[0],
                                                   X.shape[1],
                                                   &Y[0, 0])
+        return self.postprocess_aux_data_cpp(aux_data_cpp)
 
-        qs_vector = aux_data_cpp[b"qs"]
-
-        n_q = qs_vector.size()
-        qs = []
-        for i in range(n_q):
-            qs.append(qs_vector[i])
-
-        qs = np.array(qs)
-
-        embds_vector = aux_data_cpp[b"embds"]
-        embds = []
-        n_embds = embds_vector.size()
-        for i in range(n_embds):
-           embds.append(embds_vector[i])
-
-        embds = np.array(embds)
+    def fit_transform_edges(self, float[:, :] X, float[:, :] Y, long[:, :] affinities):
+        aux_data_cpp = self.c_ncvis.fit_transform_edges(&X[0, 0],
+                                                        X.shape[0],
+                                                        X.shape[1],
+                                                        &Y[0, 0],
+                                                        &affinities[0, 0],
+                                                        len(affinities))
+        return self.postprocess_aux_data_cpp(aux_data_cpp)
 
 
-
-        edges_vector = aux_data_cpp[b"edges"]
-        edges = []
-        n_edges = edges_vector.size()
-        for i in range(n_edges):
-            edges.append(int(edges_vector[i]))
-
-        edges = np.array(edges)
-
-        aux_data = {"qs": qs, "embds": embds, "edges": edges}
-
-        return aux_data
 
 
 class NCVis:
-    def __init__(self, d=2, n_threads=-1, n_neighbors=15, M=16, ef_construction=200, random_seed=42, n_epochs=50, n_init_epochs=20, spread=1., min_dist=0.4, a=None, b=None, alpha=1., alpha_Q=1., n_noise=None, distance="euclidean", fix_Q=False, fix_noise=False):
+    def __init__(self, d=2, n_threads=-1, n_neighbors=15, M=16, ef_construction=200, random_seed=42, n_epochs=50, n_init_epochs=20, spread=1., min_dist=0.4, a=None, b=None, alpha=1., alpha_Q=1., n_noise=None, distance="euclidean", fix_Q=False, fix_noise=False, precomp_init=False):
         """
         Creates new NCVis instance.
 
@@ -198,6 +197,8 @@ class NCVis:
 
     def fit_transform(self,
                       X,
+                      init=None,
+                      affinities=None,
                       log_norm=True,
                       log_nce=True,
                       log_nce_no_noise=True,
@@ -219,11 +220,27 @@ class NCVis:
             The embedding of the data samples.
         """
 
-        Y = np.empty((X.shape[0], self.d), dtype=np.float32)
-        aux_data = self.model.fit_transform(np.ascontiguousarray(X,
-                                                                  dtype=np.float32),
-                                             np.ascontiguousarray(Y,
-                                                                  dtype=np.float32))
+        if init is not None:
+            assert init.shape[0] == X.shape[0]
+            assert init.shape[1] == self.d
+            Y = init.astype(np.float32)
+            self.model.precomp_init = True
+        else:
+            self.model.precomp_init = False
+            Y = np.empty((X.shape[0], self.d), dtype=np.float32)
+
+        if affinities is None:
+            aux_data = self.model.fit_transform(np.ascontiguousarray(X,
+                                                                     dtype=np.float32),
+                                                np.ascontiguousarray(Y,
+                                                                     dtype=np.float32))
+        else:
+            aux_data = self.model.fit_transform_edges(np.ascontiguousarray(X,
+                                                                     dtype=np.float32),
+                                                np.ascontiguousarray(Y,
+                                                                     dtype=np.float32),
+                                                np.ascontiguousarray(affinities,
+                                                                     dtype=np.int64))
         self.embd = Y
         self.aux_data = aux_data
 

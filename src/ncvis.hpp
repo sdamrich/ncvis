@@ -54,7 +54,9 @@ namespace ncvis {
         @param Y Pointer to the embedding [N, d]. The j-th coordinate of i-th sample is assumed to be found at (X+d*i+j).
         */
         std::map<std::string, std::vector<float>> fit_transform(const float *const X, long N, long D, float* Y);
-    
+        std::map<std::string, std::vector<float>> fit_transform_edges(const float *const X, long N, long D, float* Y, long* precomp_edges, long n_edges);
+        bool precomp_init;
+
     private:
         long d_;
         long M_;
@@ -74,6 +76,7 @@ namespace ncvis {
         Distance dist_;
         bool fix_Q_;
         bool fix_noise_;
+
 
 
         void preprocess(const float *const x, long D, ncvis::Distance dist, float* out);
