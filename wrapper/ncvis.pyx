@@ -3,11 +3,13 @@ import numpy as np
 cimport numpy as cnp
 import ctypes
 from multiprocessing import cpu_count
+from builtins import bool as pbool
 from libcpp cimport bool
 from libcpp.pair cimport pair
 from libcpp.vector cimport vector
 from vis_utils.utils import NCE_loss_keops, KL_divergence, compute_normalization
 import scipy.sparse
+
 
 
 from scipy.optimize import curve_fit
@@ -34,7 +36,7 @@ cdef class NCVisWrapper:
     cdef cncvis.NCVis* c_ncvis
     cdef long d
 
-    def __cinit__(self, long d, long n_threads, long n_neighbors, long M, long ef_construction, long random_seed, int n_epochs, int n_init_epochs, float a, float b, float alpha, float alpha_Q, object n_noise, cncvis.Distance distance, bool fix_Q, bool fix_noise):
+    def __cinit__(self, long d, long n_threads, long n_neighbors, long M, long ef_construction, long random_seed, int n_epochs, int n_init_epochs, float a, float b, float alpha, float alpha_Q, object n_noise, cncvis.Distance distance, bool fix_Q, bool noise_in_ratio, float noise_in_ratio_val, bool learn_Q):
         cdef long[:] n_noise_arr
         if isinstance(n_noise, int):
             n_noise_arr = np.full(n_epochs, n_noise, dtype=np.long)
@@ -43,7 +45,10 @@ cdef class NCVisWrapper:
                 raise ValueError("Expected 1D n_noise array.")
             n_epochs = n_noise.shape[0]
             n_noise_arr = n_noise.astype(np.long)
-        self.c_ncvis = new cncvis.NCVis(d, n_threads, n_neighbors, M, ef_construction, random_seed, n_epochs, n_init_epochs, a, b, alpha, alpha_Q, &n_noise_arr[0], distance, fix_Q, fix_noise)
+        self.c_ncvis = new cncvis.NCVis(d, n_threads, n_neighbors, M, ef_construction,
+                                        random_seed, n_epochs, n_init_epochs, a, b,
+                                        alpha, alpha_Q, &n_noise_arr[0], distance,
+                                        fix_Q, noise_in_ratio, noise_in_ratio_val, learn_Q)
         self.d = d
 
     def __dealloc__(self):
@@ -90,7 +95,10 @@ cdef class NCVisWrapper:
 
 
 class NCVis:
-    def __init__(self, d=2, n_threads=-1, n_neighbors=15, M=16, ef_construction=200, random_seed=42, n_epochs=50, n_init_epochs=20, spread=1., min_dist=0.4, a=None, b=None, alpha=1., alpha_Q=1., n_noise=None, distance="euclidean", fix_Q=False, fix_noise=False, precomp_init=False):
+    def __init__(self, d=2, n_threads=-1, n_neighbors=15, M=16, ef_construction=200,
+                 random_seed=42, n_epochs=50, n_init_epochs=20, spread=1., min_dist=0.4,
+                 a=None, b=None, alpha=1., alpha_Q=1., n_noise=None, distance="euclidean",
+                 fix_Q=False, noise_in_ratio=False, precomp_init=False, bool learn_Q=True):
         """
         Creates new NCVis instance.
 
@@ -147,7 +155,14 @@ class NCVis:
         self.n_epochs = n_epochs
         self.random_seed = random_seed
         self.distance = distance
-        self.fix_noise = fix_noise
+        if noise_in_ratio == 0:
+            self.noise_in_ratio = True
+            self.noise_in_ratio_val = float(n_noise) if n_noise is not None else 5.0
+        else:
+            self.noise_in_ratio = False
+            self.noise_in_ratio_val = float(noise_in_ratio)
+
+
         self.fix_Q = fix_Q
         self.n_noise = n_noise
         self.n_neighbors = n_neighbors
@@ -193,7 +208,10 @@ class NCVis:
                 raise ValueError(f'Expected (a, b) to be (float, float) or (None, None),con but got (a, b) = ({a}, {b})')
         self.a = a
         self.b = b
-        self.model = NCVisWrapper(d, n_threads, n_neighbors, M, ef_construction, random_seed, n_epochs, n_init_epochs, a, b, alpha, alpha_Q, negative_plan, distances[distance], fix_Q, fix_noise)
+        self.model = NCVisWrapper(d, n_threads, n_neighbors, M, ef_construction,
+                                  random_seed, n_epochs, n_init_epochs, a, b, alpha,
+                                  alpha_Q, negative_plan, distances[distance],
+                                  fix_Q, self.noise_in_ratio, self.noise_in_ratio_val, learn_Q)
 
     def fit_transform(self,
                       X,
@@ -255,7 +273,8 @@ class NCVis:
         self.aux_data["n_epochs"] = self.n_epochs
         self.aux_data["random_seed"] = self.random_seed
         self.aux_data["distance"] = self.distance
-        self.aux_data["fix_noise"] = self.fix_noise
+        self.aux_data["noise_in_ratio"] = self.noise_in_ratio
+        self.aux_data["noise_in_ratio_val"] = self.noise_in_ratio_val
         self.aux_data["fix_Q"] = self.fix_Q
         self.aux_data["n_noise"] = self.n_noise
         self.aux_data["n_neighbors"] = self.n_neighbors
@@ -263,11 +282,13 @@ class NCVis:
         if log_norm or log_nce_norm:
             norm = []
             for embd in self.aux_data["embds"]:
-                norm.append(compute_normalization(embd, a=self.a, b=self.b).cpu().numpy())
+                norm.append(compute_normalization(embd,
+                                                  a=self.a,
+                                                  b=self.b).cpu().numpy())
             norm = np.array(norm)
             self.aux_data["normalization"] = norm.flatten()
 
-        if log_nce:
+        if log_nce or log_nce_norm or log_nce_no_noise or log_kl:
             knn_graph = scipy.sparse.coo_matrix((np.ones(len(self.aux_data["edges"])),
                                                 (self.aux_data["edges"][:, 0],
                                                  self.aux_data["edges"][:, 1])),
@@ -321,6 +342,7 @@ class NCVis:
             self.aux_data["kl_div"] = np.array(kl_div)
 
         if not log_embds:
+            self.aux_data["embd"] = self.aux_data["embds"][-1]
             del self.aux_data["embds"]
 
         return Y

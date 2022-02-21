@@ -11,9 +11,15 @@
 
 ncvis::NCVis::NCVis(long d, long n_threads, long n_neighbors, long M,
                     long ef_construction, long random_seed, int n_epochs, 
-                    int n_init_epochs, float a, float b, float alpha, float alpha_Q, long* n_noise, ncvis::Distance dist, bool fix_Q, bool fix_noise):
+                    int n_init_epochs, float a, float b, float alpha, float alpha_Q,
+                    long* n_noise, ncvis::Distance dist, bool fix_Q, bool noise_in_ratio,
+                    float noise_in_ratio_val, bool learn_Q):
 d_(d), M_(M), ef_construction_(ef_construction), 
-random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs), n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q), space_(nullptr), appr_alg_(nullptr), dist_(dist), fix_Q_(fix_Q), fix_noise_(fix_noise), precomp_init(false)
+random_seed_(random_seed), n_neighbors_(n_neighbors), n_epochs_(n_epochs),
+n_init_epochs_(n_init_epochs), a_(a), b_(b), alpha_(alpha), alpha_Q_(alpha_Q),
+space_(nullptr), appr_alg_(nullptr), dist_(dist),
+fix_Q_(fix_Q), noise_in_ratio_(noise_in_ratio), noise_in_ratio_val_(noise_in_ratio_val),
+learn_Q_(learn_Q), precomp_init(false)
 {
     omp_set_num_threads(n_threads);
     n_noise_ = new long[n_epochs];
@@ -293,7 +299,7 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::optimize(long N, float* 
 
     // create degree vector
     std::vector<float> deg(N, 0.0);
-    if (fix_noise_){
+    if (noise_in_ratio_){
         for (long i = 0; i < (long)edges.size(); ++i){
             deg[edges[i].first] += 1.0; // only count out-degree
             // deg[edges[i].second] += 1.0; // every edge appears twice in edges (once in each direction), but we only want to consider it with weight 1.
@@ -307,9 +313,10 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::optimize(long N, float* 
             // damped just like for the step size of the embeddings
              step_Q *= (1-(((float)epoch)/n_epochs_)*(((float)epoch)/n_epochs_));
         }
-
-
         float Q_copy = Q;
+        if (!learn_Q_){
+            Q_copy = 0.;
+        }
         long cur_noise = n_noise_[epoch];
         #pragma omp for nowait
         for (long i = 0; i < (long)edges.size(); ++i){
@@ -328,11 +335,11 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::optimize(long N, float* 
                 float Ph = 1/(1+a_*powf(d2, b_));
                 float w = 1.;
                 if (cur_noise != 0){
-                    if (fix_noise_){
+                    if (noise_in_ratio_){
                         float prob_noise = deg[id]/(((float)N-1.0)*(float)edges.size());
                         w = Ph/(cur_noise*prob_noise*expf(Q_copy));
                     } else {
-                        w = Ph/(cur_noise*expf(Q_copy));
+                        w = Ph/(noise_in_ratio_val_*expf(Q_copy));
                         // w = Ph/(cur_noise*expf(Q));
                     }
 
@@ -342,7 +349,9 @@ std::map<std::string, std::vector<float>> ncvis::NCVis::optimize(long N, float* 
                         w = -1/(1+1/w);
                     }
 
-                    Q_copy -= w*step_Q;
+                    if (learn_Q_){
+                        Q_copy -= w*step_Q;
+                    }
 
                     w = 2*w*Ph*a_*b_*powf(d2, b_-1);
                 }

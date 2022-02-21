@@ -41,7 +41,10 @@ namespace ncvis {
         @param n_noise Number of noise samples per data sample for each iteration. An array of size [n_epochs]; will be initialized to 3 noise samples per data sample for each epoch if not provided.
         @param dist Distance to use for nearest neighbors search.
         */
-        NCVis(long d=2, long n_threads=1, long n_neighbors=30, long M = 16, long ef_construction = 200, long random_seed = 42, int n_epochs=50, int n_init_epochs=20, float a=1., float b=1., float alpha=1., float alpha_Q=1., long* n_noise=nullptr, ncvis::Distance dist=ncvis::Distance::squared_L2, bool fix_Q=false, bool fix_noise=false);
+        NCVis(long d=2, long n_threads=1, long n_neighbors=30, long M = 16, long ef_construction = 200,
+         long random_seed = 42, int n_epochs=50, int n_init_epochs=20, float a=1., float b=1.,
+         float alpha=1., float alpha_Q=1., long* n_noise=nullptr, ncvis::Distance dist=ncvis::Distance::squared_L2,
+          bool fix_Q=false, bool noise_in_ratio=false, float noise_in_ratio_val=5., bool learn_Q=true);
         ~NCVis();
         /*!
         @brief Build embedding for points.
@@ -75,7 +78,9 @@ namespace ncvis {
         hnswlib::HierarchicalNSW<float>* appr_alg_;
         Distance dist_;
         bool fix_Q_;
-        bool fix_noise_;
+        bool noise_in_ratio_;
+        float noise_in_ratio_val_;
+        bool learn_Q_;
 
 
 
